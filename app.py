@@ -23,8 +23,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Build the agent graph once at startup ──────────────────────────────
-agent = build_graph()
+# We will build the agent graph dynamically inside the message handler
+# so we can use the async checkpointer.
 
 
 @cl.on_chat_start
@@ -82,75 +82,77 @@ async def on_message(message: cl.Message):
     STREAMABLE_NODES = {"resource_finder", "study_planner", "professor", "general_chat"}
 
     try:
-        # Stream events from the LangGraph
-        final_content = ""
-        active_node = None
+        from agent.memory import get_async_checkpointer
+        async with get_async_checkpointer() as checkpointer:
+            agent = build_graph(checkpointer=checkpointer)
 
-        async for event in agent.astream_events(
-            {"messages": [HumanMessage(content=message.content)]},
-            version="v2",
-            config=config,
-        ):
-            event_type = event.get("event", "")
-            event_name = event.get("name", "")
+            # Stream events from the LangGraph
+            final_content = ""
+            active_node = None
 
-            # ── Track which node is currently active ───────────────
-            if event_type == "on_chain_start":
-                if event_name in STREAMABLE_NODES:
-                    active_node = event_name
-                elif event_name in ("router", "summarize", "verify"):
-                    active_node = event_name
+            async for event in agent.astream_events(
+                {"messages": [HumanMessage(content=message.content)]},
+                version="v2",
+                config=config,
+            ):
+                event_type = event.get("event", "")
+                event_name = event.get("name", "")
 
-                # Show status indicators for long-running nodes
-                if event_name == "resource_finder" and current_step != "resource_finder":
-                    current_step = "resource_finder"
-                    async with cl.Step(name="🔍 Searching for resources..."):
-                        pass
-                elif event_name == "study_planner" and current_step != "study_planner":
-                    current_step = "study_planner"
-                    async with cl.Step(name="📅 Creating your study plan..."):
-                        pass
-                elif event_name == "verify" and current_step != "verify":
-                    current_step = "verify"
+                # ── Track which node is currently active ───────────────
+                if event_type == "on_chain_start":
+                    if event_name in STREAMABLE_NODES:
+                        active_node = event_name
+                    elif event_name in ("router", "summarize", "verify"):
+                        active_node = event_name
 
-            elif event_type == "on_chain_end":
-                if event_name == active_node:
-                    active_node = None
+                    # Show status indicators for long-running nodes
+                    if event_name == "resource_finder" and current_step != "resource_finder":
+                        current_step = "resource_finder"
+                        async with cl.Step(name="🔍 Searching for resources..."):
+                            pass
+                    elif event_name == "study_planner" and current_step != "study_planner":
+                        current_step = "study_planner"
+                        async with cl.Step(name="📅 Creating your study plan..."):
+                            pass
+                    elif event_name == "verify" and current_step != "verify":
+                        current_step = "verify"
 
-            # ── Stream tokens only from specialist nodes ───────────
-            if event_type == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk", None)
-                if chunk and hasattr(chunk, "content") and chunk.content:
-                    # Only stream from specialist nodes, not router/summarizer
-                    if active_node in STREAMABLE_NODES:
-                        await msg.stream_token(chunk.content)
-                        final_content += chunk.content
+                elif event_type == "on_chain_end":
+                    if event_name == active_node:
+                        active_node = None
 
-        # Fallback: if streaming didn't capture content (e.g. non-streaming
-        # model or verification stripped/modified the response), get the
-        # final verified response from the checkpointed state
-        if not final_content:
-            state = agent.get_state(config)
-            if state and state.values:
-                messages = state.values.get("messages", [])
-                if messages:
-                    last_msg = messages[-1]
-                    if hasattr(last_msg, "content") and last_msg.content:
-                        msg.content = last_msg.content
-        else:
-            # Check if verification modified the response
-            state = agent.get_state(config)
-            if state and state.values:
-                messages = state.values.get("messages", [])
-                if messages:
-                    verified_content = messages[-1].content if hasattr(messages[-1], "content") else ""
-                    # If verified response differs (e.g. URLs were stripped),
-                    # replace streamed content with the verified version
-                    if verified_content and verified_content != final_content:
-                        msg.content = verified_content
-                        final_content = verified_content
+                # ── Stream tokens only from specialist nodes ───────────
+                if event_type == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk", None)
+                    if chunk and hasattr(chunk, "content") and chunk.content:
+                        # Only stream from specialist nodes, not router/summarizer
+                        if active_node in STREAMABLE_NODES:
+                            await msg.stream_token(chunk.content)
+                            final_content += chunk.content
 
-        await msg.update()
+            # If streaming didn't produce content, get the final state
+            if not final_content:
+                state = await agent.aget_state(config)
+                if state and state.values:
+                    messages = state.values.get("messages", [])
+                    if messages:
+                        last_msg = messages[-1]
+                        if hasattr(last_msg, "content") and last_msg.content:
+                            msg.content = last_msg.content
+            else:
+                # Check if verification modified the response
+                state = await agent.aget_state(config)
+                if state and state.values:
+                    messages = state.values.get("messages", [])
+                    if messages:
+                        verified_content = messages[-1].content if hasattr(messages[-1], "content") else ""
+                        # If verified response differs (e.g. URLs were stripped),
+                        # replace streamed content with the verified version
+                        if verified_content and verified_content != final_content:
+                            msg.content = verified_content
+                            final_content = verified_content
+
+            await msg.update()
 
     except Exception as e:
         logger.error("Error processing message: %s", e, exc_info=True)

@@ -15,7 +15,7 @@ from langchain_core.messages import (
     HumanMessage,
     AIMessage,
 )
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +24,19 @@ DB_PATH = Path(__file__).parent.parent / "data" / "memory.sqlite"
 MAX_MESSAGES_IN_CONTEXT = 10  # Keep last N messages verbatim
 
 
-def get_checkpointer() -> SqliteSaver:
-    """Create and return a SQLite checkpointer for LangGraph persistence.
+def get_async_checkpointer():
+    """Create and return an async SQLite checkpointer context manager for LangGraph.
 
     The checkpointer automatically saves the agent's state (messages,
     topic, search results, etc.) after every node transition. When the
     agent restarts, it resumes from the last checkpoint.
 
     Returns:
-        A SqliteSaver instance connected to the local SQLite database.
+        An async context manager yielding an AsyncSqliteSaver instance.
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     logger.info("Memory database at %s", DB_PATH)
-    return SqliteSaver(conn)
+    return AsyncSqliteSaver.from_conn_string(str(DB_PATH))
 
 
 def trim_conversation(messages: list, max_messages: int = MAX_MESSAGES_IN_CONTEXT) -> list:

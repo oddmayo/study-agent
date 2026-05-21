@@ -1,0 +1,29 @@
+[project]
+# Whether to enable telemetry (default: true).
+enable_telemetry = false
+
+# List of environment variables to be provided by each user to use the app.
+user_env = []
+
+# Duration (in seconds) during which the session is saved when the connection is lost
+session_timeout = 3600
+
+[features]
+# Process and display mathematical expressions
+latex = true
+
+[UI]
+# Name of the app and chatbot.
+name = "Study Partner"
+
+# Description of the app and chatbot.
+description = "Your AI-powered study companion"
+
+# The default value for the expand messages setting.
+default_expand_messages = false
+
+# Hide the chain of thought details from the user in the UI.
+hide_cot = true
+
+[meta]
+generated_by = "study-partner-agent"

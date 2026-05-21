@@ -22,7 +22,7 @@ from agent.nodes import (
     general_chat_node,
     verify_node,
 )
-from agent.memory import get_checkpointer
+from agent.memory import get_async_checkpointer
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def _route_by_intent(state: dict) -> str:
     return next_node
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     """Build and compile the study partner agent graph.
 
     Graph structure:
@@ -106,9 +106,11 @@ def build_graph():
     builder.add_edge("verify", END)
 
     # ── Compile with persistence ───────────────────────────────────
-    checkpointer = get_checkpointer()
-
-    graph = builder.compile(checkpointer=checkpointer)
+    
+    if checkpointer:
+        graph = builder.compile(checkpointer=checkpointer)
+    else:
+        graph = builder.compile()
 
     logger.info("Agent graph compiled successfully")
     return graph
