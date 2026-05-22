@@ -25,8 +25,7 @@ from agent.prompts import (
     RESOURCE_FINDER_PROMPT,
     STUDY_PLANNER_PROMPT,
     PROFESSOR_PROMPT,
-    QUIZ_GENERATOR_PROMPT,
-    QUIZ_GRADER_PROMPT,
+    QUIZ_MASTER_PROMPT,
     SUMMARIZE_PROMPT,
 )
 from agent.schemas import RouterDecision
@@ -850,19 +849,8 @@ def quiz_master_node(state: dict) -> dict:
     if topics_covered:
         context += f"Topics the student has covered: {', '.join(topics_covered)}\n"
 
-    # Determine if grading or generating based on the last AI message
-    last_ai_msg = ""
-    for m in reversed(messages):
-        if isinstance(m, AIMessage):
-            last_ai_msg = m.content
-            break
-
-    is_grading = "## 📝 Ready?" in last_ai_msg
-
-    prompt_to_use = QUIZ_GRADER_PROMPT if is_grading else QUIZ_GENERATOR_PROMPT
-
     quiz_messages = [
-        SystemMessage(content=prompt_to_use),
+        SystemMessage(content=QUIZ_MASTER_PROMPT),
         HumanMessage(
             content=(
                 f"{context}"

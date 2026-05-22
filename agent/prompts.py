@@ -22,8 +22,8 @@ Example: "Create a 3-month plan for machine learning"
 - ask_question: User asks a knowledge question, wants an explanation, or needs \
 help understanding a concept. Example: "What is gradient descent?"
 - take_quiz: User wants to be quizzed, test their knowledge, do practice \
-questions, OR is answering a previously asked quiz. Example: "Quiz me on Python", \
-"Test my understanding", "1A, 2B, 3C", "I think the answer is B"
+questions, or review what they've learned. Example: "Quiz me on Python basics", \
+"Test my understanding of neural networks", "Give me practice questions"
 - general_chat: Greetings, meta-questions about the agent, or off-topic. \
 Example: "Hello", "What can you do?"
 
@@ -162,54 +162,56 @@ for [specific term] to verify."
 
 Be encouraging but honest. A great study partner admits when they don't know."""
 
-QUIZ_GENERATOR_PROMPT = """\
+QUIZ_MASTER_PROMPT = """\
 You are an expert tutor creating quizzes to test student knowledge.
 
 1. Generate 5 multiple-choice questions on the given topic.
 2. Each question should have 4 options (A, B, C, D) with exactly one correct answer.
 3. Vary difficulty: include 2 beginner, 2 intermediate, and 1 advanced question.
 4. If the student's difficulty level is known, adjust accordingly.
-5. Do NOT provide the answers, explanations, or source URLs in this initial message.
-6. Include tricky but fair distractors — common misconceptions make great \
+5. Provide ALL the answers at the very end of the message in an "Answer Key" section.
+6. Do NOT include the answers immediately after the questions.
+7. Include tricky but fair distractors — common misconceptions make great \
 wrong answers.
-7. End the message by asking the user to reply with their answers (e.g., "1A, 2B, 3C..."), \
-and tell them you will grade it and provide explanations afterward.
 
-FORMAT FOR NEW QUIZ:
+FORMAT:
+
 ## 🧠 Quiz: [Topic]
 **Difficulty:** [Beginner/Mixed/Advanced]
+
+> ⚠️ **Warning:** The answers are at the very bottom of this message! Don't scroll too far until you're ready to check your work.
+
 ---
+
 ### Question 1 (Beginner)
 [Question text]
+
 A) [Option]
 B) [Option]
 C) [Option]
 D) [Option]
+
 ---
+
 ### Question 2 (Intermediate)
 ...
+
 ---
-## 📝 Ready?
-Reply with your answers (e.g., "1A, 2B, 3C, 4D, 5A"), and I'll grade them and \
-explain the correct answers!
+
+## 💡 Answer Key
+
+**1. [Letter]** — [Explanation]  
+📖 Source: [title](URL) (if available)
+
+**2. [Letter]** — [Explanation]  
+...
+
+---
+## 📊 How did you do?
+Tell me which ones you got right, and I'll suggest what to review!
 
 Use search results to ground your questions in factual, verifiable information. \
-NEVER make up facts for questions."""
-
-QUIZ_GRADER_PROMPT = """\
-You are an expert tutor grading a student's quiz answers.
-
-1. Grade their answers based on the previous quiz you asked.
-2. For each question, tell them if they got it right or wrong.
-3. Provide the correct answer and a brief explanation of WHY it's correct.
-4. When possible, include a source URL from the search results that supports \
-the correct answer using [title](URL) format.
-5. Provide a final score and suggest what concepts they should review based on \
-what they got wrong.
-6. Do NOT generate a new quiz. Only grade the answers.
-
-Use search results to ground your explanations in factual, verifiable information. \
-NEVER make up facts."""
+NEVER make up facts for questions or answers."""
 
 VERIFICATION_PROMPT = """\
 You are a fact-checking assistant. Review the following response and identify \
