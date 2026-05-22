@@ -157,24 +157,65 @@ def _clean_search_query(user_message: str, topic: str) -> str:
     return cleaned
 
 
+def _quote_topic(topic: str) -> str:
+    """Wrap multi-word topics in quotes for better search disambiguation.
+
+    'linear algebra' → '"linear algebra"' so search engines treat it
+    as a phrase and don't return results about 'Linear' the product.
+    Single-word topics are returned as-is.
+    """
+    if " " in topic.strip():
+        return f'"{ topic.strip()}"'
+    return topic.strip()
+
+
+# Domains that almost never contain educational content
+_NOISE_DOMAINS = {
+    # Social media
+    "instagram.com", "tiktok.com", "facebook.com", "twitter.com",
+    "x.com", "pinterest.com", "snapchat.com", "threads.net",
+    # App stores
+    "play.google.com", "apps.apple.com",
+    # Product / SaaS pages (common false positives)
+    "linear.app", "notion.so", "figma.com", "slack.com",
+    # Dictionaries / translation (common for short topic names)
+    "rae.es", "wordreference.com", "linguee.com", "deepl.com",
+    "translate.google.com", "dictionary.com",
+    # Shopping
+    "amazon.com", "ebay.com", "etsy.com", "walmart.com",
+    # News / entertainment (rarely educational for study topics)
+    "imdb.com", "yelp.com", "tripadvisor.com",
+}
+
+# Domains that are strong educational signals — results from these
+# pass the relevance filter more easily
+_EDUCATIONAL_DOMAINS = {
+    "arxiv.org", "scholar.google.com", "coursera.org", "edx.org",
+    "khanacademy.org", "ocw.mit.edu", "freecodecamp.org",
+    "reddit.com", "stackoverflow.com", "mathworld.wolfram.com",
+    "wikipedia.org", "geeksforgeeks.org", "towardsdatascience.com",
+    "medium.com", "youtube.com", "github.com", "docs.python.org",
+    "scikit-learn.org", "pytorch.org", "tensorflow.org",
+    "huggingface.co", "paperswithcode.com",
+}
+
+
 def _filter_relevant_results(results: list[dict], topic: str, concept: str) -> list[dict]:
     """Remove search results that are obviously off-topic.
 
-    Checks if the result title or snippet mentions either the topic
-    or the concept being asked about. Filters out social media noise,
-    app store listings, and other irrelevant pages.
+    Uses a multi-signal approach:
+    1. Block known noise domains (social media, product pages, dictionaries)
+    2. Auto-pass results from known educational domains
+    3. For remaining results, require keyword overlap — at least 2 keywords
+       for multi-word topics, 1 for single-word topics
     """
-    # Domains that almost never contain educational content
-    noise_domains = {
-        "instagram.com", "tiktok.com", "facebook.com",
-        "play.google.com", "apps.apple.com", "twitter.com",
-        "x.com", "pinterest.com", "snapchat.com",
-    }
-
     keywords = set()
     for term in (topic.lower().split() + concept.lower().split()):
-        if len(term) > 2:  # Skip tiny words
+        if len(term) > 2:  # Skip tiny words like 'is', 'to', 'a'
             keywords.add(term)
+
+    # For multi-word topics, require stricter matching
+    min_keyword_hits = 2 if len(keywords) >= 2 else 1
 
     filtered = []
     for r in results:
@@ -183,18 +224,119 @@ def _filter_relevant_results(results: list[dict], topic: str, concept: str) -> l
         snippet = r.get("snippet", "").lower()
 
         # Skip known noise domains
-        if any(domain in url for domain in noise_domains):
+        if any(domain in url for domain in _NOISE_DOMAINS):
             logger.debug("Filtered out noise domain: %s", url)
             continue
 
-        # Check if at least one keyword appears in title or snippet
+        # Auto-pass educational domains (still need at least 1 keyword)
         text = f"{title} {snippet}"
-        if any(kw in text for kw in keywords):
+        keyword_hits = sum(1 for kw in keywords if kw in text)
+
+        is_educational = any(domain in url for domain in _EDUCATIONAL_DOMAINS)
+
+        if is_educational and keyword_hits >= 1:
+            filtered.append(r)
+        elif keyword_hits >= min_keyword_hits:
             filtered.append(r)
         else:
-            logger.debug("Filtered out irrelevant result: %s", r.get('title', ''))
+            logger.debug(
+                "Filtered out irrelevant result (%d/%d keywords): %s",
+                keyword_hits, min_keyword_hits, r.get('title', ''),
+            )
 
     return filtered
+
+
+def _search_academic_resources(topic: str, concept: str = "") -> tuple[list[dict], list[dict]]:
+    """Search for academic papers and books related to a topic.
+
+    Performs targeted searches for arxiv papers, seminal research,
+    and recommended textbooks. Returns two lists: (papers, books).
+    Results are relevance-filtered — only returns non-empty lists
+    when genuinely relevant results are found.
+
+    Args:
+        topic: The broad study topic (e.g. "machine learning").
+        concept: The specific concept being discussed (e.g. "eigenvalues").
+            If empty, searches at the topic level.
+
+    Returns:
+        Tuple of (papers, books) where each is a list of search result dicts.
+    """
+    quoted_topic = _quote_topic(topic)
+    search_term = f"{quoted_topic} {concept}".strip() if concept else quoted_topic
+
+    # Search for papers — use specific academic terms
+    paper_queries = [
+        f"{search_term} research paper site:arxiv.org",
+        f"{search_term} seminal foundational paper survey",
+    ]
+    paper_results = []
+    seen_urls = set()
+    for q in paper_queries:
+        for r in raw_web_search(q, max_results=3):
+            if r.get("url") and r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                paper_results.append(r)
+
+    # Search for books — use specific book terms
+    book_queries = [
+        f"{search_term} best textbook recommended",
+        f"{search_term} must read book site:reddit.com",
+    ]
+    book_results = []
+    for q in book_queries:
+        for r in raw_web_search(q, max_results=3):
+            if r.get("url") and r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                book_results.append(r)
+
+    # Filter for relevance
+    papers = _filter_relevant_results(paper_results, topic, concept or topic)
+    books = _filter_relevant_results(book_results, topic, concept or topic)
+
+    logger.info(
+        "Academic search for '%s': %d papers, %d books",
+        search_term, len(papers), len(books),
+    )
+
+    return papers, books
+
+
+def _format_academic_section(papers: list[dict], books: list[dict]) -> str:
+    """Format academic papers and books as a tagged section for the LLM.
+
+    Returns an empty string if no relevant papers or books were found,
+    so the section is omitted entirely from the prompt.
+    """
+    if not papers and not books:
+        return ""
+
+    sections = []
+
+    if papers:
+        paper_docs = "\n\n".join(
+            f'<paper id="p{i+1}">\n'
+            f"  <title>{r['title']}</title>\n"
+            f"  <url>{r['url']}</url>\n"
+            f"  <summary>{r['snippet']}</summary>\n"
+            f"</paper>"
+            for i, r in enumerate(papers)
+        )
+        sections.append(f"ACADEMIC PAPERS:\n{paper_docs}")
+
+    if books:
+        book_docs = "\n\n".join(
+            f'<book id="b{i+1}">\n'
+            f"  <title>{r['title']}</title>\n"
+            f"  <url>{r['url']}</url>\n"
+            f"  <summary>{r['snippet']}</summary>\n"
+            f"</book>"
+            for i, r in enumerate(books)
+        )
+        sections.append(f"RECOMMENDED BOOKS:\n{book_docs}")
+
+    return "\n\n".join(sections)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -350,15 +492,19 @@ def resource_finder_node(state: dict) -> dict:
             "search_results": [],
         }
 
-    # Perform targeted searches — focused on resources + community recommendations
+    # Perform targeted searches — quoted topic for disambiguation
+    qt = _quote_topic(topic)
     queries = [
-        f"{topic} best free online courses tutorials 2025 2026",
-        f"{topic} best free resources recommendations site:reddit.com",
-        f"{topic} best books for beginners free PDF",
-        f"{topic} learning roadmap guide community recommended",
+        f"{qt} best free online courses tutorials 2025 2026",
+        f"{qt} best free resources recommendations site:reddit.com",
+        f"{qt} best books for beginners",
+        f"{qt} learning roadmap guide community recommended",
     ]
 
     all_results = _perform_search(topic, queries)
+
+    # Filter out irrelevant results
+    all_results = _filter_relevant_results(all_results, topic, topic)
 
     if not all_results:
         return {
@@ -373,6 +519,13 @@ def resource_finder_node(state: dict) -> dict:
     # Format results as tagged documents for source grounding
     tagged_docs = _format_tagged_docs(all_results)
 
+    # Search for academic papers and books (supplementary)
+    papers, books = _search_academic_resources(topic)
+    academic_section = _format_academic_section(papers, books)
+
+    # Merge all results for verification
+    combined_results = all_results + papers + books
+
     llm = _get_llm()
 
     # Build the prompt with grounding context
@@ -380,23 +533,33 @@ def resource_finder_node(state: dict) -> dict:
     if summary:
         context += f"Previous context: {summary}\n\n"
 
+    prompt_content = (
+        f"{context}"
+        f"The student wants to learn about: **{topic}**\n\n"
+        f"Here are the search results. ONLY use URLs from these documents:\n\n"
+        f"{tagged_docs}"
+    )
+
+    if academic_section:
+        prompt_content += (
+            f"\n\nThe following academic papers and books were also found. "
+            f"Include a '📄 Recommended Reading' section at the end ONLY if "
+            f"these are genuinely relevant to the topic. "
+            f"If they are NOT relevant, do NOT include this section at all "
+            f"— do not even mention that papers were provided:\n\n"
+            f"{academic_section}"
+        )
+
     resource_messages = [
         SystemMessage(content=RESOURCE_FINDER_PROMPT),
-        HumanMessage(
-            content=(
-                f"{context}"
-                f"The student wants to learn about: **{topic}**\n\n"
-                f"Here are the search results. ONLY use URLs from these documents:\n\n"
-                f"{tagged_docs}"
-            )
-        ),
+        HumanMessage(content=prompt_content),
     ]
 
     response = llm.invoke(resource_messages)
 
     return {
         "response_draft": response.content,
-        "search_results": all_results,
+        "search_results": combined_results,
         "topics_covered": _track_topic(topic, topics_covered),
     }
 
@@ -424,18 +587,29 @@ def study_planner_node(state: dict) -> dict:
             "search_results": [],
         }
 
-    # Search for resources to include in the plan
+    # Search for resources to include in the plan — quoted topic for disambiguation
+    qt = _quote_topic(topic)
     queries = [
-        f"{topic} complete learning roadmap beginner to advanced 2025 2026",
-        f"{topic} best free courses structured curriculum",
-        f"{topic} study plan recommendations site:reddit.com",
-        f"{topic} practice projects exercises beginners",
+        f"{qt} complete learning roadmap beginner to advanced 2025 2026",
+        f"{qt} best free courses structured curriculum",
+        f"{qt} study plan recommendations site:reddit.com",
+        f"{qt} practice projects exercises beginners",
     ]
 
     all_results = _perform_search(topic, queries)
 
+    # Filter out irrelevant results
+    all_results = _filter_relevant_results(all_results, topic, topic)
+
     # Format as tagged documents
     tagged_docs = _format_tagged_docs(all_results)
+
+    # Search for academic papers and books (supplementary)
+    papers, books = _search_academic_resources(topic)
+    academic_section = _format_academic_section(papers, books)
+
+    # Merge all results for verification
+    combined_results = all_results + papers + books
 
     llm = _get_llm()
 
@@ -450,17 +624,27 @@ def study_planner_node(state: dict) -> dict:
     if summary:
         context += f"Previous context: {summary}\n\n"
 
+    prompt_content = (
+        f"{context}"
+        f"Student's request: {last_msg}\n"
+        f"Topic: **{topic}**\n\n"
+        f"Available resources (ONLY use URLs from these documents):\n\n"
+        f"{tagged_docs}"
+    )
+
+    if academic_section:
+        prompt_content += (
+            f"\n\nThe following academic papers and books were also found. "
+            f"If relevant, include a '📄 Recommended Reading' section in the "
+            f"plan suggesting these as supplementary materials. "
+            f"If they are NOT relevant, do NOT include this section at all "
+            f"— do not even mention that papers were provided:\n\n"
+            f"{academic_section}"
+        )
+
     planner_messages = [
         SystemMessage(content=STUDY_PLANNER_PROMPT),
-        HumanMessage(
-            content=(
-                f"{context}"
-                f"Student's request: {last_msg}\n"
-                f"Topic: **{topic}**\n\n"
-                f"Available resources (ONLY use URLs from these documents):\n\n"
-                f"{tagged_docs}"
-            )
-        ),
+        HumanMessage(content=prompt_content),
     ]
 
     response = llm.invoke(planner_messages)
@@ -478,7 +662,7 @@ def study_planner_node(state: dict) -> dict:
 
     return {
         "response_draft": response.content + saved_note,
-        "search_results": all_results,
+        "search_results": combined_results,
         "topics_covered": _track_topic(topic, topics_covered),
     }
 
@@ -511,11 +695,12 @@ def professor_node(state: dict) -> dict:
     concept = _clean_search_query(last_msg, topic)
     logger.info("Professor search concept: '%s' (from: '%s')", concept, last_msg[:80])
 
-    # Build targeted search queries using the cleaned concept, not the raw message
+    # Build targeted search queries — quoted topic for disambiguation
+    qt = _quote_topic(topic)
     queries = [
-        f"{topic} {concept} explanation tutorial",
-        f"{topic} {concept} site:reddit.com",
-        f"{concept} guide examples",
+        f"{qt} {concept} explanation tutorial",
+        f"{qt} {concept} site:reddit.com",
+        f"{qt} {concept} guide examples",
     ]
 
     all_results = _perform_search(topic, queries)
@@ -528,6 +713,13 @@ def professor_node(state: dict) -> dict:
     )
 
     tagged_docs = _format_tagged_docs(relevant_results) if relevant_results else ""
+
+    # Search for academic papers and books (supplementary)
+    papers, books = _search_academic_resources(topic, concept)
+    academic_section = _format_academic_section(papers, books)
+
+    # Merge all results for verification
+    combined_results = relevant_results + papers + books
 
     llm = _get_llm()
 
@@ -550,6 +742,19 @@ def professor_node(state: dict) -> dict:
         m for m in recent_msgs if not isinstance(m, SystemMessage)
     ]
 
+    # Build grounding context with academic supplements
+    academic_instruction = ""
+    if academic_section:
+        academic_instruction = (
+            f"\n\nThe following academic papers and books were also found. "
+            f"If they are genuinely relevant to this specific explanation, "
+            f"mention them at the end as '📄 Recommended Reading'. "
+            f"If they are NOT relevant, do NOT include a Recommended Reading "
+            f"section at all — do not even mention that papers were provided "
+            f"or that none were relevant. Simply omit it entirely:\n\n"
+            f"{academic_section}"
+        )
+
     # Inject search results as grounding context, or tell the LLM to use knowledge
     if tagged_docs:
         professor_messages.append(
@@ -557,7 +762,8 @@ def professor_node(state: dict) -> dict:
                 content=(
                     f"Here are relevant web sources to support your answer. "
                     f"Cite them using [title](URL) format where applicable:\n\n"
-                    f"{tagged_docs}\n\n"
+                    f"{tagged_docs}"
+                    f"{academic_instruction}\n\n"
                     f"Now answer the student's question: {last_msg}"
                 )
             )
@@ -570,7 +776,8 @@ def professor_node(state: dict) -> dict:
                     f"Give a thorough, high-quality explanation from your knowledge. "
                     f"Do NOT apologize about missing sources — just teach the concept well. "
                     f"If you think the student should verify specific claims, suggest "
-                    f"they search for a specific term.\n\n"
+                    f"they search for a specific term."
+                    f"{academic_instruction}\n\n"
                     f"Answer the student's question: {last_msg}"
                 )
             )
@@ -580,7 +787,7 @@ def professor_node(state: dict) -> dict:
 
     return {
         "response_draft": response.content,
-        "search_results": relevant_results,
+        "search_results": combined_results,
         "topics_covered": _track_topic(topic, topics_covered),
     }
 
@@ -614,11 +821,12 @@ def quiz_master_node(state: dict) -> dict:
         }
 
     # Search for factual content to base questions on
+    qt = _quote_topic(topic)
     queries = [
-        f"{topic} key concepts explained",
-        f"{topic} common interview questions answers",
-        f"{topic} quiz practice questions site:reddit.com",
-        f"{topic} beginner mistakes misconceptions",
+        f"{qt} key concepts explained",
+        f"{qt} common interview questions answers",
+        f"{qt} quiz practice questions site:reddit.com",
+        f"{qt} beginner mistakes misconceptions",
     ]
 
     all_results = _perform_search(topic, queries)
