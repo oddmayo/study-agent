@@ -13,7 +13,7 @@ class RouterDecision(BaseModel):
     """Structured output for the router node's intent classification."""
 
     intent: str = Field(
-        description="One of: search_resources, create_plan, ask_question, general_chat"
+        description="One of: search_resources, create_plan, ask_question, take_quiz, general_chat"
     )
     topic: str = Field(
         description="The study topic being discussed, e.g. 'machine learning', 'Japanese'"
@@ -44,17 +44,25 @@ class Resource(BaseModel):
     )
 
 
-class ExpertProfile(BaseModel):
-    """An influential figure in a study topic."""
+class QuizQuestion(BaseModel):
+    """A single quiz question for testing knowledge."""
 
-    name: str = Field(description="Full name of the expert")
-    role: str = Field(
-        description="Their role, e.g. 'Professor at Stanford', 'YouTube Educator'"
+    question: str = Field(description="The quiz question")
+    options: list[str] = Field(
+        description="4 multiple-choice options labeled A, B, C, D"
     )
-    known_for: str = Field(description="What they're known for in this field")
-    recommended_resources: list[str] = Field(
-        default_factory=list,
-        description="Their courses, books, channels, etc.",
+    correct_answer: str = Field(
+        description="The correct option letter: A, B, C, or D"
+    )
+    explanation: str = Field(
+        description="Brief explanation of why this is the correct answer"
+    )
+    difficulty: str = Field(
+        description="One of: beginner, intermediate, advanced"
+    )
+    source_url: str = Field(
+        default="",
+        description="URL that supports the correct answer, if available",
     )
 
 
@@ -83,10 +91,6 @@ class StudyPlan(BaseModel):
         description="What the student should know beforehand",
     )
     phases: list[StudyPhase] = Field(description="Ordered list of study phases")
-    experts_to_follow: list[str] = Field(
-        default_factory=list,
-        description="Key people to follow in this field",
-    )
     tips: list[str] = Field(
         default_factory=list,
         description="General tips for studying this topic",

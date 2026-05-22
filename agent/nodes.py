@@ -12,7 +12,7 @@ Quality patterns used here:
 - Source grounding (tagged documents for citations)
 - Confidence scoring (router knows when it's uncertain)
 - Conversation summarization (token optimization)
-- Few-shot prompting (consistent output quality)
+- Quiz generation with active recall
 """
 
 import json
@@ -25,6 +25,7 @@ from agent.prompts import (
     RESOURCE_FINDER_PROMPT,
     STUDY_PLANNER_PROMPT,
     PROFESSOR_PROMPT,
+    QUIZ_MASTER_PROMPT,
     SUMMARIZE_PROMPT,
 )
 from agent.schemas import RouterDecision
@@ -50,6 +51,150 @@ def _get_llm():
     if _llm is None:
         _llm = get_llm(streaming=True)
     return _llm
+
+
+def _perform_search(topic: str, queries: list[str]) -> list[dict]:
+    """Shared search logic: run queries and deduplicate results."""
+    all_results = []
+    seen_urls = set()
+    for query in queries[:MAX_SEARCH_QUERIES]:
+        results = raw_web_search(query, max_results=4)
+        for r in results:
+            if r.get("url") and r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                all_results.append(r)
+    return all_results
+
+
+def _format_tagged_docs(results: list[dict]) -> str:
+    """Format search results as tagged XML documents for source grounding."""
+    return "\n\n".join(
+        f'<doc id="{i+1}">\n'
+        f"  <title>{r['title']}</title>\n"
+        f"  <url>{r['url']}</url>\n"
+        f"  <content>{r['snippet']}</content>\n"
+        f"</doc>"
+        for i, r in enumerate(results)
+    )
+
+
+def _track_topic(topic: str, existing_topics: list[str]) -> list[str]:
+    """Add a topic to the covered topics list (deduplicated)."""
+    if not topic or topic == "general":
+        return existing_topics
+    normalized = topic.lower().strip()
+    if normalized not in [t.lower() for t in existing_topics]:
+        return existing_topics + [topic]
+    return existing_topics
+
+
+# Conversational phrases to strip when building search queries
+_NOISE_PHRASES = [
+    "i'm having trouble understanding",
+    "i am having trouble understanding",
+    "i don't understand",
+    "i do not understand",
+    "could you explain",
+    "can you explain",
+    "please explain",
+    "help me understand",
+    "help me with",
+    "i need help with",
+    "i'm confused about",
+    "i am confused about",
+    "tell me about",
+    "what exactly is",
+    "what exactly are",
+    "what is a",
+    "what is an",
+    "what is",
+    "what are",
+    "how does",
+    "how do",
+    "why does",
+    "why do",
+    "explain to me",
+    "explain",
+    "like i'm a beginner",
+    "like i am a beginner",
+    "in simple terms",
+    "simply",
+]
+
+
+def _clean_search_query(user_message: str, topic: str) -> str:
+    """Extract the core concept from a conversational question.
+
+    Strips common conversational phrases so the search engine gets
+    a clean, concept-focused query instead of a full English sentence.
+
+    Example:
+        "I'm having trouble understanding eigen values, could you explain it?"
+        → "eigen values"
+    """
+    cleaned = user_message.lower().strip()
+
+    # Remove punctuation at the end
+    cleaned = cleaned.rstrip("?!.,;:")
+
+    # Strip noise phrases (longest first to avoid partial matches)
+    for phrase in sorted(_NOISE_PHRASES, key=len, reverse=True):
+        cleaned = cleaned.replace(phrase, "")
+
+    # Remove filler words that survive
+    cleaned = cleaned.replace(" it ", " ").replace(" it", "")
+
+    # Collapse whitespace
+    cleaned = " ".join(cleaned.split()).strip()
+
+    # Remove leading/trailing commas and conjunctions
+    cleaned = cleaned.strip(",- ")
+
+    # If cleaning removed everything, fall back to topic
+    if not cleaned or len(cleaned) < 3:
+        return topic
+
+    return cleaned
+
+
+def _filter_relevant_results(results: list[dict], topic: str, concept: str) -> list[dict]:
+    """Remove search results that are obviously off-topic.
+
+    Checks if the result title or snippet mentions either the topic
+    or the concept being asked about. Filters out social media noise,
+    app store listings, and other irrelevant pages.
+    """
+    # Domains that almost never contain educational content
+    noise_domains = {
+        "instagram.com", "tiktok.com", "facebook.com",
+        "play.google.com", "apps.apple.com", "twitter.com",
+        "x.com", "pinterest.com", "snapchat.com",
+    }
+
+    keywords = set()
+    for term in (topic.lower().split() + concept.lower().split()):
+        if len(term) > 2:  # Skip tiny words
+            keywords.add(term)
+
+    filtered = []
+    for r in results:
+        url = r.get("url", "").lower()
+        title = r.get("title", "").lower()
+        snippet = r.get("snippet", "").lower()
+
+        # Skip known noise domains
+        if any(domain in url for domain in noise_domains):
+            logger.debug("Filtered out noise domain: %s", url)
+            continue
+
+        # Check if at least one keyword appears in title or snippet
+        text = f"{title} {snippet}"
+        if any(kw in text for kw in keywords):
+            filtered.append(r)
+        else:
+            logger.debug("Filtered out irrelevant result: %s", r.get('title', ''))
+
+    return filtered
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -182,21 +327,22 @@ def router_node(state: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# NODE: Resource Finder — Search web + Reddit + experts
+# NODE: Resource Finder — Search web + Reddit for learning resources
 # ══════════════════════════════════════════════════════════════════════
 
 
 def resource_finder_node(state: dict) -> dict:
     """Search for learning resources using multiple targeted queries.
 
-    Performs up to MAX_SEARCH_QUERIES searches across general web,
-    Reddit, and expert-focused queries. Results are tagged with document
-    IDs for source grounding — the LLM can only cite URLs that appear
-    in these tagged documents.
+    Performs up to MAX_SEARCH_QUERIES searches across general web
+    and Reddit. Results are tagged with document IDs for source
+    grounding — the LLM can only cite URLs that appear in these
+    tagged documents.
     """
     topic = state.get("current_topic", "")
     messages = state.get("messages", [])
     summary = state.get("summary", "")
+    topics_covered = state.get("topics_covered", [])
 
     if not topic or topic == "general":
         return {
@@ -204,22 +350,15 @@ def resource_finder_node(state: dict) -> dict:
             "search_results": [],
         }
 
-    # Perform targeted searches
+    # Perform targeted searches — focused on resources + community recommendations
     queries = [
         f"{topic} best free online courses tutorials 2025 2026",
         f"{topic} best free resources recommendations site:reddit.com",
-        f"{topic} most influential professors authors YouTube educators",
         f"{topic} best books for beginners free PDF",
+        f"{topic} learning roadmap guide community recommended",
     ]
 
-    all_results = []
-    seen_urls = set()
-    for query in queries[:MAX_SEARCH_QUERIES]:
-        results = raw_web_search(query, max_results=4)
-        for r in results:
-            if r.get("url") and r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
+    all_results = _perform_search(topic, queries)
 
     if not all_results:
         return {
@@ -232,14 +371,7 @@ def resource_finder_node(state: dict) -> dict:
         }
 
     # Format results as tagged documents for source grounding
-    tagged_docs = "\n\n".join(
-        f'<doc id="{i+1}">\n'
-        f"  <title>{r['title']}</title>\n"
-        f"  <url>{r['url']}</url>\n"
-        f"  <content>{r['snippet']}</content>\n"
-        f"</doc>"
-        for i, r in enumerate(all_results)
-    )
+    tagged_docs = _format_tagged_docs(all_results)
 
     llm = _get_llm()
 
@@ -265,6 +397,7 @@ def resource_finder_node(state: dict) -> dict:
     return {
         "response_draft": response.content,
         "search_results": all_results,
+        "topics_covered": _track_topic(topic, topics_covered),
     }
 
 
@@ -277,12 +410,13 @@ def study_planner_node(state: dict) -> dict:
     """Generate a structured study plan with timeline and resources.
 
     First searches for resources, then uses those results to build
-    a comprehensive plan with phases, milestones, and expert recommendations.
-    The plan is also saved to a local markdown file.
+    a comprehensive plan with phases, milestones, and self-assessment
+    checkpoints. The plan is also saved to a local markdown file.
     """
     topic = state.get("current_topic", "")
     messages = state.get("messages", [])
     summary = state.get("summary", "")
+    topics_covered = state.get("topics_covered", [])
 
     if not topic or topic == "general":
         return {
@@ -295,27 +429,13 @@ def study_planner_node(state: dict) -> dict:
         f"{topic} complete learning roadmap beginner to advanced 2025 2026",
         f"{topic} best free courses structured curriculum",
         f"{topic} study plan recommendations site:reddit.com",
-        f"{topic} influential professors educators to follow",
+        f"{topic} practice projects exercises beginners",
     ]
 
-    all_results = []
-    seen_urls = set()
-    for query in queries[:MAX_SEARCH_QUERIES]:
-        results = raw_web_search(query, max_results=4)
-        for r in results:
-            if r.get("url") and r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
+    all_results = _perform_search(topic, queries)
 
     # Format as tagged documents
-    tagged_docs = "\n\n".join(
-        f'<doc id="{i+1}">\n'
-        f"  <title>{r['title']}</title>\n"
-        f"  <url>{r['url']}</url>\n"
-        f"  <content>{r['snippet']}</content>\n"
-        f"</doc>"
-        for i, r in enumerate(all_results)
-    )
+    tagged_docs = _format_tagged_docs(all_results)
 
     llm = _get_llm()
 
@@ -359,24 +479,55 @@ def study_planner_node(state: dict) -> dict:
     return {
         "response_draft": response.content + saved_note,
         "search_results": all_results,
+        "topics_covered": _track_topic(topic, topics_covered),
     }
 
 
 # ══════════════════════════════════════════════════════════════════════
-# NODE: Professor — Q&A and teaching
+# NODE: Professor — Q&A with web-sourced citations
 # ══════════════════════════════════════════════════════════════════════
 
 
 def professor_node(state: dict) -> dict:
-    """Answer questions and explain concepts in professor mode.
+    """Answer questions and explain concepts with web-sourced citations.
 
-    Uses the full conversation context (summary + recent messages)
-    to provide contextual, pedagogical responses. The professor
-    prompt enforces Socratic teaching and honest uncertainty.
+    Searches the web for supporting sources using cleaned search queries
+    (not the raw user message). Filters out irrelevant results. Falls back
+    gracefully to general knowledge when search results are poor.
     """
     messages = state.get("messages", [])
     summary = state.get("summary", "")
     topic = state.get("current_topic", "")
+    topics_covered = state.get("topics_covered", [])
+
+    # Get the student's question
+    last_msg = ""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            last_msg = m.content
+            break
+
+    # Extract the core concept from the conversational question
+    concept = _clean_search_query(last_msg, topic)
+    logger.info("Professor search concept: '%s' (from: '%s')", concept, last_msg[:80])
+
+    # Build targeted search queries using the cleaned concept, not the raw message
+    queries = [
+        f"{topic} {concept} explanation tutorial",
+        f"{topic} {concept} site:reddit.com",
+        f"{concept} guide examples",
+    ]
+
+    all_results = _perform_search(topic, queries)
+
+    # Filter out obviously irrelevant results (Instagram, app stores, etc.)
+    relevant_results = _filter_relevant_results(all_results, topic, concept)
+    logger.info(
+        "Professor search: %d raw results → %d relevant",
+        len(all_results), len(relevant_results),
+    )
+
+    tagged_docs = _format_tagged_docs(relevant_results) if relevant_results else ""
 
     llm = _get_llm()
 
@@ -387,17 +538,128 @@ def professor_node(state: dict) -> dict:
     if topic:
         system_content += f"\nCurrent study topic: {topic}"
 
+    difficulty = state.get("difficulty_level", "beginner")
+    system_content += f"\nStudent's current level: {difficulty}"
+
+    if topics_covered:
+        system_content += f"\nTopics already covered: {', '.join(topics_covered)}"
+
     # Use the recent conversation for context
     recent_msgs = trim_conversation(messages, max_messages=8)
     professor_messages = [SystemMessage(content=system_content)] + [
         m for m in recent_msgs if not isinstance(m, SystemMessage)
     ]
 
+    # Inject search results as grounding context, or tell the LLM to use knowledge
+    if tagged_docs:
+        professor_messages.append(
+            HumanMessage(
+                content=(
+                    f"Here are relevant web sources to support your answer. "
+                    f"Cite them using [title](URL) format where applicable:\n\n"
+                    f"{tagged_docs}\n\n"
+                    f"Now answer the student's question: {last_msg}"
+                )
+            )
+        )
+    else:
+        professor_messages.append(
+            HumanMessage(
+                content=(
+                    f"No relevant web sources were found for this question. "
+                    f"Give a thorough, high-quality explanation from your knowledge. "
+                    f"Do NOT apologize about missing sources — just teach the concept well. "
+                    f"If you think the student should verify specific claims, suggest "
+                    f"they search for a specific term.\n\n"
+                    f"Answer the student's question: {last_msg}"
+                )
+            )
+        )
+
     response = llm.invoke(professor_messages)
 
     return {
         "response_draft": response.content,
-        "search_results": [],  # Professor doesn't search — uses knowledge
+        "search_results": relevant_results,
+        "topics_covered": _track_topic(topic, topics_covered),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# NODE: Quiz Master — Generate quizzes for active recall
+# ══════════════════════════════════════════════════════════════════════
+
+
+def quiz_master_node(state: dict) -> dict:
+    """Generate interactive quizzes to reinforce learning.
+
+    Creates multiple-choice questions based on the current topic,
+    grounded in web search results for factual accuracy. Adapts
+    difficulty based on the student's tracked level.
+    """
+    topic = state.get("current_topic", "")
+    messages = state.get("messages", [])
+    summary = state.get("summary", "")
+    difficulty = state.get("difficulty_level", "beginner")
+    topics_covered = state.get("topics_covered", [])
+
+    if not topic or topic == "general":
+        return {
+            "response_draft": (
+                "I'd love to quiz you! What topic should I test you on? "
+                "You can say something like *\"Quiz me on Python basics\"* "
+                "or *\"Test my understanding of gradient descent\"*."
+            ),
+            "search_results": [],
+        }
+
+    # Search for factual content to base questions on
+    queries = [
+        f"{topic} key concepts explained",
+        f"{topic} common interview questions answers",
+        f"{topic} quiz practice questions site:reddit.com",
+        f"{topic} beginner mistakes misconceptions",
+    ]
+
+    all_results = _perform_search(topic, queries)
+    tagged_docs = _format_tagged_docs(all_results) if all_results else ""
+
+    llm = _get_llm()
+
+    # Get user's specific quiz request if any
+    last_msg = ""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            last_msg = m.content
+            break
+
+    # Build quiz context
+    context = ""
+    if summary:
+        context += f"Previous context: {summary}\n\n"
+    if topics_covered:
+        context += f"Topics the student has covered: {', '.join(topics_covered)}\n"
+
+    quiz_messages = [
+        SystemMessage(content=QUIZ_MASTER_PROMPT),
+        HumanMessage(
+            content=(
+                f"{context}"
+                f"Student's request: {last_msg}\n"
+                f"Topic: **{topic}**\n"
+                f"Student difficulty level: **{difficulty}**\n\n"
+                f"Use these search results to create factually grounded questions. "
+                f"Include source URLs where applicable:\n\n"
+                f"{tagged_docs}"
+            )
+        ),
+    ]
+
+    response = llm.invoke(quiz_messages)
+
+    return {
+        "response_draft": response.content,
+        "search_results": all_results,
     }
 
 
@@ -415,21 +677,26 @@ def general_chat_node(state: dict) -> dict:
     """
     messages = state.get("messages", [])
     summary = state.get("summary", "")
+    topics_covered = state.get("topics_covered", [])
 
     llm = _get_llm()
 
     system_content = (
         "You are a friendly study partner AI. You help people learn any topic "
-        "by finding resources, creating study plans, and answering questions.\n\n"
+        "by finding resources, creating study plans, answering questions, and "
+        "quizzing them on what they've learned.\n\n"
         "If the user greets you or asks what you can do, explain your capabilities:\n"
-        "1. 🔍 Find learning resources (courses, books, videos, tutorials)\n"
-        "2. 📅 Create structured study plans with timelines\n"
-        "3. 🎓 Answer questions and explain concepts like a professor\n"
-        "4. 👥 Recommend experts and creators to follow\n\n"
-        "Be warm, encouraging, and concise."
+        "1. 🔍 Find learning resources (courses, books, videos, tutorials) with verified links\n"
+        "2. 📅 Create structured study plans with timelines and milestones\n"
+        "3. 🎓 Answer questions and explain concepts with supporting sources\n"
+        "4. 🧠 Quiz you on any topic to reinforce learning through active recall\n\n"
+        "Be warm, encouraging, and concise. If the student has been studying, "
+        "proactively suggest a quiz or next topic to explore."
     )
     if summary:
         system_content += f"\n\nConversation context: {summary}"
+    if topics_covered:
+        system_content += f"\nTopics covered so far: {', '.join(topics_covered)}"
 
     recent_msgs = trim_conversation(messages, max_messages=6)
     chat_messages = [SystemMessage(content=system_content)] + [

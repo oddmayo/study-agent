@@ -22,12 +22,16 @@ class AgentState(TypedDict):
         current_topic: The active study topic being discussed. Persists
             across turns so the agent remembers what you're studying.
         intent: The router's classification of the user's latest message.
-            One of: search_resources, create_plan, ask_question, general_chat.
+            One of: search_resources, create_plan, ask_question, take_quiz, general_chat.
         search_results: Raw search results from the most recent web search.
             Stored here so the verification node can cross-reference cited URLs.
         response_draft: The specialist node's response before verification.
             The verification node checks this and either passes it through
             or cleans it before sending to the user.
+        difficulty_level: Tracks the student's current level (beginner,
+            intermediate, advanced) — adapts explanations and quiz difficulty.
+        topics_covered: List of sub-topics the student has explored so far.
+            Used by the quiz generator and for suggesting next topics.
     """
 
     messages: Annotated[list, add_messages]
@@ -36,3 +40,5 @@ class AgentState(TypedDict):
     intent: str
     search_results: list[dict]
     response_draft: str
+    difficulty_level: str
+    topics_covered: list[str]

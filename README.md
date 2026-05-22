@@ -6,11 +6,11 @@ An AI-powered study companion that helps you learn **anything** — from data sc
 
 | Feature | Description |
 |:---|:---|
-| 🔍 **Resource Finder** | Searches the web + Reddit for free courses, books, videos, and tutorials |
-| 📅 **Study Planner** | Creates structured study plans with week-by-week timelines and milestones |
-| 🎓 **Professor Mode** | Answers questions and explains concepts with a Socratic teaching style |
-| 👥 **Expert Finder** | Recommends influential professors, YouTube creators, and authors to follow |
-| 🧠 **Memory** | Remembers your conversation across sessions (persistent SQLite storage) |
+| 🔍 **Resource Finder** | Searches the web + Reddit for free courses, books, videos, and tutorials — with verified links |
+| 📅 **Study Planner** | Creates structured study plans with timelines, milestones, and self-assessment checkpoints |
+| 🎓 **Concept Explainer** | Answers questions with web-sourced citations — every claim backed by a URL |
+| 🧠 **Quiz Master** | Generates interactive multiple-choice quizzes to reinforce learning through active recall |
+| 💾 **Memory** | Remembers your conversation across sessions (persistent SQLite storage) |
 | ✅ **Verified Responses** | Every URL is checked against actual search results — no hallucinated links |
 
 ## 🚀 Quick Start (3 Steps)
@@ -81,9 +81,10 @@ User Message
     ▼
 📝 Summarize ──→ 🧭 Router (intent classification)
                      │
-                     ├──→ 🔍 Resource Finder (web + Reddit + experts)
+                     ├──→ 🔍 Resource Finder (web + Reddit search)
                      ├──→ 📅 Study Planner (structured plans)
-                     ├──→ 🎓 Professor (Q&A teaching)
+                     ├──→ 🎓 Professor (Q&A with web citations)
+                     ├──→ 🧠 Quiz Master (active recall quizzes)
                      └──→ 💬 General Chat
                               │
                               ▼
@@ -114,7 +115,7 @@ study-agent/
 │   ├── graph.py          # LangGraph state machine
 │   ├── state.py          # Agent state schema
 │   ├── nodes.py          # Node implementations
-│   ├── tools.py          # Search tools (web, Reddit, experts)
+│   ├── tools.py          # Search tools (web, Reddit)
 │   ├── prompts.py        # System prompts (versioned)
 │   ├── schemas.py        # Pydantic output schemas
 │   ├── llm.py            # LLM provider (Groq + Ollama)

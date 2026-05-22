@@ -117,34 +117,6 @@ def reddit_search(query: str) -> str:
 
 
 @tool
-def find_experts(topic: str) -> str:
-    """Find influential professors, authors, and educators for a topic."""
-    search_fn = _get_search_engine()
-    queries = [
-        f"{topic} most influential professors researchers experts",
-        f"{topic} best YouTube educators content creators",
-        f"who to follow to learn {topic} recommendations",
-    ]
-    all_results = []
-    seen_urls = set()
-    for q in queries:
-        results = search_fn(q, max_results=3)
-        for r in results:
-            if r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
-
-    if not all_results:
-        return "No expert information found. Try a more specific topic."
-    formatted = []
-    for i, r in enumerate(all_results, 1):
-        formatted.append(
-            f"[{i}] {r['title']}\n    URL: {r['url']}\n    {r['snippet']}"
-        )
-    return "\n\n".join(formatted)
-
-
-@tool
 def save_study_plan(topic: str, content: str) -> str:
     """Save a study plan to a local markdown file."""
     # Sanitize filename

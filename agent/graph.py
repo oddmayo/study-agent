@@ -19,6 +19,7 @@ from agent.nodes import (
     resource_finder_node,
     study_planner_node,
     professor_node,
+    quiz_master_node,
     general_chat_node,
     verify_node,
 )
@@ -39,6 +40,7 @@ def _route_by_intent(state: dict) -> str:
         "search_resources": "resource_finder",
         "create_plan": "study_planner",
         "ask_question": "professor",
+        "take_quiz": "quiz_master",
         "general_chat": "general_chat",
     }
 
@@ -59,6 +61,7 @@ def build_graph(checkpointer=None):
                         ├──→ resource_finder ──→ verify ──→ __end__
                         ├──→ study_planner ───→ verify ──→ __end__
                         ├──→ professor ───────→ verify ──→ __end__
+                        ├──→ quiz_master ─────→ verify ──→ __end__
                         └──→ general_chat ───→ verify ──→ __end__
 
     Returns:
@@ -73,6 +76,7 @@ def build_graph(checkpointer=None):
     builder.add_node("resource_finder", resource_finder_node)
     builder.add_node("study_planner", study_planner_node)
     builder.add_node("professor", professor_node)
+    builder.add_node("quiz_master", quiz_master_node)
     builder.add_node("general_chat", general_chat_node)
     builder.add_node("verify", verify_node)
 
@@ -92,6 +96,7 @@ def build_graph(checkpointer=None):
             "resource_finder": "resource_finder",
             "study_planner": "study_planner",
             "professor": "professor",
+            "quiz_master": "quiz_master",
             "general_chat": "general_chat",
         },
     )
@@ -100,6 +105,7 @@ def build_graph(checkpointer=None):
     builder.add_edge("resource_finder", "verify")
     builder.add_edge("study_planner", "verify")
     builder.add_edge("professor", "verify")
+    builder.add_edge("quiz_master", "verify")
     builder.add_edge("general_chat", "verify")
 
     # Verify → End
