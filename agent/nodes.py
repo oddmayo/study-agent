@@ -622,7 +622,8 @@ def quiz_master_node(state: dict) -> dict:
     ]
 
     all_results = _perform_search(topic, queries)
-    tagged_docs = _format_tagged_docs(all_results) if all_results else ""
+    relevant_results = _filter_relevant_results(all_results, topic, topic)
+    tagged_docs = _format_tagged_docs(relevant_results) if relevant_results else ""
 
     llm = _get_llm()
 
@@ -659,7 +660,7 @@ def quiz_master_node(state: dict) -> dict:
 
     return {
         "response_draft": response.content,
-        "search_results": all_results,
+        "search_results": relevant_results,
     }
 
 
