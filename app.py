@@ -44,17 +44,20 @@ async def on_start():
     await cl.Message(
         content=(
             "👋 **Welcome to Study Partner!**\n\n"
-            "I'm your AI study companion. Here's what I can do:\n\n"
+            "I'm your AI academic study companion, focused exclusively on "
+            "**university-level subjects**. Here's what I can do:\n\n"
             "- 🔍 **Find Resources** — courses, books, videos, tutorials (with verified links!)\n"
             "- 📅 **Create Study Plans** — structured roadmaps with timelines and milestones\n"
             "- 🎓 **Explain Concepts** — answer questions with supporting sources\n"
             "- 🧠 **Quiz You** — test your knowledge with interactive quizzes\n\n"
+            "**Subjects I cover:** Math, Computer Science, Data Science, Physics, "
+            "Chemistry, Biology, Languages, Engineering, Economics, and more.\n\n"
             "**Try saying:**\n"
-            '- *"Find me free resources to learn machine learning"*\n'
-            '- *"Create a 3-month study plan for web development"*\n'
+            '- *"Find me free resources to learn linear algebra"*\n'
+            '- *"Create a 3-month study plan for machine learning"*\n'
             '- *"Explain gradient descent like I\'m a beginner"*\n'
-            '- *"Quiz me on Python basics"*\n\n'
-            "What would you like to learn today? 📚"
+            '- *"Quiz me on Python data structures"*\n\n'
+            "What would you like to study today? 📚"
         )
     ).send()
 
@@ -79,7 +82,7 @@ async def on_message(message: cl.Message):
     current_step = None
 
     # Nodes whose LLM output should be streamed to the user
-    STREAMABLE_NODES = {"resource_finder", "study_planner", "professor", "quiz_master", "general_chat"}
+    STREAMABLE_NODES = {"resource_finder", "study_planner", "professor", "quiz_master", "general_chat", "off_topic"}
 
     try:
         from agent.memory import get_async_checkpointer

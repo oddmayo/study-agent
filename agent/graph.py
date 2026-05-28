@@ -21,6 +21,7 @@ from agent.nodes import (
     professor_node,
     quiz_master_node,
     general_chat_node,
+    off_topic_node,
     verify_node,
 )
 from agent.memory import get_async_checkpointer
@@ -41,6 +42,7 @@ def _route_by_intent(state: dict) -> str:
         "create_plan": "study_planner",
         "ask_question": "professor",
         "take_quiz": "quiz_master",
+        "off_topic": "off_topic",
         "general_chat": "general_chat",
     }
 
@@ -78,6 +80,7 @@ def build_graph(checkpointer=None):
     builder.add_node("professor", professor_node)
     builder.add_node("quiz_master", quiz_master_node)
     builder.add_node("general_chat", general_chat_node)
+    builder.add_node("off_topic", off_topic_node)
     builder.add_node("verify", verify_node)
 
     # ── Add edges ──────────────────────────────────────────────────
@@ -97,6 +100,7 @@ def build_graph(checkpointer=None):
             "study_planner": "study_planner",
             "professor": "professor",
             "quiz_master": "quiz_master",
+            "off_topic": "off_topic",
             "general_chat": "general_chat",
         },
     )
@@ -107,6 +111,7 @@ def build_graph(checkpointer=None):
     builder.add_edge("professor", "verify")
     builder.add_edge("quiz_master", "verify")
     builder.add_edge("general_chat", "verify")
+    builder.add_edge("off_topic", "verify")
 
     # Verify → End
     builder.add_edge("verify", END)

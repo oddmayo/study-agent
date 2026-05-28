@@ -32,7 +32,7 @@ def _get_search_engine():
 
 def _search_duckduckgo(query: str, max_results: int = 5) -> list[dict]:
     """Search using DuckDuckGo (free, no API key needed)."""
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 
     try:
         with DDGS() as ddgs:

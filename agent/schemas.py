@@ -13,7 +13,7 @@ class RouterDecision(BaseModel):
     """Structured output for the router node's intent classification."""
 
     intent: str = Field(
-        description="One of: search_resources, create_plan, ask_question, take_quiz, general_chat"
+        description="One of: search_resources, create_plan, ask_question, take_quiz, off_topic, general_chat"
     )
     topic: str = Field(
         description="The study topic being discussed, e.g. 'machine learning', 'Japanese'"

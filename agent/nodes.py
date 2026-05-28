@@ -26,6 +26,7 @@ from agent.prompts import (
     STUDY_PLANNER_PROMPT,
     PROFESSOR_PROMPT,
     QUIZ_MASTER_PROMPT,
+    OFF_TOPIC_PROMPT,
     SUMMARIZE_PROMPT,
 )
 from agent.schemas import RouterDecision
@@ -37,7 +38,7 @@ from agent.llm import get_llm
 logger = logging.getLogger(__name__)
 
 # ── Execution guardrails ───────────────────────────────────────────────
-MAX_SEARCH_QUERIES = 4  # Max search queries per turn
+MAX_SEARCH_QUERIES = 6  # Max search queries per turn (raised for multi-source)
 MAX_MESSAGES_BEFORE_SUMMARY = 10  # Trigger summarization at this count
 
 
@@ -64,6 +65,84 @@ def _perform_search(topic: str, queries: list[str]) -> list[dict]:
                 seen_urls.add(r["url"])
                 all_results.append(r)
     return all_results
+
+
+def _multi_source_search(topic: str, context: str = "") -> list[dict]:
+    """Google-AI-style multi-source search across platforms.
+
+    Performs targeted searches across YouTube, Reddit, educational
+    platforms, Stack Exchange, and general web — then deduplicates
+    and merges results. This emulates how Google AI goes into multiple
+    websites to assemble the best resources.
+
+    Args:
+        topic: The academic topic to search for.
+        context: Additional context (e.g., "beginner", "advanced").
+
+    Returns:
+        Deduplicated list of search results from all sources.
+    """
+    qt = _quote_topic(topic)
+    ctx = f" {context}" if context else ""
+
+    # Platform-specific queries — each targets a different source
+    # NOTE: DuckDuckGo doesn't support OR between site: operators well,
+    # so we target specific platforms. To avoid rate limits, we use fewer queries.
+    platform_queries = [
+        # Educational platforms and courses
+        f"{topic}{ctx} course tutorial coursera edx khan academy",
+        # YouTube — specifically educational channels/lectures
+        f"{topic}{ctx} full course lecture tutorial site:youtube.com",
+        # Reddit — community recommendations
+        f"{topic}{ctx} best resources site:reddit.com",
+        # Open courseware and generic guides
+        f"{topic}{ctx} tutorial guide free textbook PDF",
+    ]
+
+    import time
+    all_results = []
+    seen_urls = set()
+
+    for query in platform_queries[:MAX_SEARCH_QUERIES]:
+        results = raw_web_search(query, max_results=4)
+        for r in results:
+            if r.get("url") and r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                # Tag the source platform for better organization
+                r["source_platform"] = _detect_platform(r["url"])
+                all_results.append(r)
+        
+        # Add a delay to prevent DuckDuckGo rate limiting
+        time.sleep(1.0)
+
+    logger.info(
+        "Multi-source search for '%s': %d total results from %d queries",
+        topic, len(all_results), len(platform_queries),
+    )
+    return all_results
+
+
+def _detect_platform(url: str) -> str:
+    """Detect which platform a URL belongs to for result tagging."""
+    url_lower = url.lower()
+    platform_map = {
+        "youtube.com": "youtube", "youtu.be": "youtube",
+        "reddit.com": "reddit",
+        "coursera.org": "mooc", "edx.org": "mooc",
+        "khanacademy.org": "mooc", "ocw.mit.edu": "mooc",
+        "udemy.com": "mooc", "udacity.com": "mooc",
+        "stackoverflow.com": "qa", "stackexchange.com": "qa",
+        "math.stackexchange.com": "qa",
+        "arxiv.org": "paper", "scholar.google.com": "paper",
+        "github.com": "code", "freecodecamp.org": "code",
+        "wikipedia.org": "reference",
+        "geeksforgeeks.org": "tutorial",
+        "medium.com": "article", "towardsdatascience.com": "article",
+    }
+    for domain, platform in platform_map.items():
+        if domain in url_lower:
+            return platform
+    return "web"
 
 
 def _format_tagged_docs(results: list[dict]) -> str:
@@ -174,29 +253,49 @@ _NOISE_DOMAINS = {
     # Social media
     "instagram.com", "tiktok.com", "facebook.com", "twitter.com",
     "x.com", "pinterest.com", "snapchat.com", "threads.net",
+    "linkedin.com",
     # App stores
     "play.google.com", "apps.apple.com",
     # Product / SaaS pages (common false positives)
     "linear.app", "notion.so", "figma.com", "slack.com",
     # Dictionaries / translation (common for short topic names)
     "rae.es", "wordreference.com", "linguee.com", "deepl.com",
-    "translate.google.com", "dictionary.com",
+    "translate.google.com", "dictionary.com", "merriam-webster.com",
     # Shopping
     "amazon.com", "ebay.com", "etsy.com", "walmart.com",
+    "alibaba.com", "aliexpress.com",
     # News / entertainment (rarely educational for study topics)
-    "imdb.com", "yelp.com", "tripadvisor.com",
+    "imdb.com", "yelp.com", "tripadvisor.com", "buzzfeed.com",
+    "netflix.com", "spotify.com", "twitch.tv",
+    # Lifestyle / non-academic
+    "allrecipes.com", "food.com", "epicurious.com",
+    "webmd.com", "healthline.com",  # medical, not academic
 }
 
 # Domains that are strong educational signals — results from these
 # pass the relevance filter more easily
 _EDUCATIONAL_DOMAINS = {
-    "arxiv.org", "scholar.google.com", "coursera.org", "edx.org",
-    "khanacademy.org", "ocw.mit.edu", "freecodecamp.org",
-    "reddit.com", "stackoverflow.com", "mathworld.wolfram.com",
-    "wikipedia.org", "geeksforgeeks.org", "towardsdatascience.com",
-    "medium.com", "youtube.com", "github.com", "docs.python.org",
+    # Academic / research
+    "arxiv.org", "scholar.google.com", "paperswithcode.com",
+    "semanticscholar.org", "researchgate.net",
+    # MOOCs / educational platforms
+    "coursera.org", "edx.org", "khanacademy.org", "ocw.mit.edu",
+    "freecodecamp.org", "brilliant.org", "openstax.org",
+    "udacity.com", "codecademy.com", "datacamp.com",
+    # Community / Q&A
+    "reddit.com", "stackoverflow.com", "stackexchange.com",
+    "math.stackexchange.com", "cs.stackexchange.com",
+    "physics.stackexchange.com",
+    # Reference / tutorial
+    "wikipedia.org", "mathworld.wolfram.com", "geeksforgeeks.org",
+    "towardsdatascience.com", "medium.com", "realpython.com",
+    "w3schools.com", "tutorialspoint.com",
+    # Video (with title validation)
+    "youtube.com",
+    # Code / tools
+    "github.com", "docs.python.org", "developer.mozilla.org",
     "scikit-learn.org", "pytorch.org", "tensorflow.org",
-    "huggingface.co", "paperswithcode.com",
+    "huggingface.co", "numpy.org", "scipy.org",
 }
 
 
@@ -205,8 +304,9 @@ def _filter_relevant_results(results: list[dict], topic: str, concept: str) -> l
 
     Uses a multi-signal approach:
     1. Block known noise domains (social media, product pages, dictionaries)
-    2. Auto-pass results from known educational domains
-    3. For remaining results, require keyword overlap — at least 2 keywords
+    2. YouTube-specific validation: require topic keywords in video TITLE
+    3. Auto-pass results from known educational domains
+    4. For remaining results, require keyword overlap — at least 2 keywords
        for multi-word topics, 1 for single-word topics
     """
     keywords = set()
@@ -228,9 +328,19 @@ def _filter_relevant_results(results: list[dict], topic: str, concept: str) -> l
             logger.debug("Filtered out noise domain: %s", url)
             continue
 
-        # Auto-pass educational domains (still need at least 1 keyword)
         text = f"{title} {snippet}"
         keyword_hits = sum(1 for kw in keywords if kw in text)
+
+        # YouTube-specific: require keyword in the VIDEO TITLE (not just snippet)
+        # This prevents irrelevant YouTube channels from leaking through
+        is_youtube = "youtube.com" in url or "youtu.be" in url
+        if is_youtube:
+            title_hits = sum(1 for kw in keywords if kw in title)
+            if title_hits < 1:
+                logger.debug(
+                    "Filtered YouTube (no topic in title): %s", title,
+                )
+                continue
 
         is_educational = any(domain in url for domain in _EDUCATIONAL_DOMAINS)
 
@@ -492,18 +602,10 @@ def resource_finder_node(state: dict) -> dict:
             "search_results": [],
         }
 
-    # Perform targeted searches — quoted topic for disambiguation
-    qt = _quote_topic(topic)
-    queries = [
-        f"{qt} best free online courses tutorials 2025 2026",
-        f"{qt} best free resources recommendations site:reddit.com",
-        f"{qt} best books for beginners",
-        f"{qt} learning roadmap guide community recommended",
-    ]
+    # Perform multi-source search across platforms (YouTube, Reddit, MOOCs, etc.)
+    all_results = _multi_source_search(topic)
 
-    all_results = _perform_search(topic, queries)
-
-    # Filter out irrelevant results
+    # Filter out irrelevant results (including YouTube title validation)
     all_results = _filter_relevant_results(all_results, topic, topic)
 
     if not all_results:
@@ -587,16 +689,8 @@ def study_planner_node(state: dict) -> dict:
             "search_results": [],
         }
 
-    # Search for resources to include in the plan — quoted topic for disambiguation
-    qt = _quote_topic(topic)
-    queries = [
-        f"{qt} complete learning roadmap beginner to advanced 2025 2026",
-        f"{qt} best free courses structured curriculum",
-        f"{qt} study plan recommendations site:reddit.com",
-        f"{qt} practice projects exercises beginners",
-    ]
-
-    all_results = _perform_search(topic, queries)
+    # Multi-source search across platforms
+    all_results = _multi_source_search(topic, context="roadmap curriculum")
 
     # Filter out irrelevant results
     all_results = _filter_relevant_results(all_results, topic, topic)
@@ -882,7 +976,7 @@ def general_chat_node(state: dict) -> dict:
 
     This is the fallback node for messages that don't fit the other
     categories. It provides friendly responses and guides the user
-    toward the agent's capabilities.
+    toward the agent's academic capabilities.
     """
     messages = state.get("messages", [])
     summary = state.get("summary", "")
@@ -891,14 +985,17 @@ def general_chat_node(state: dict) -> dict:
     llm = _get_llm()
 
     system_content = (
-        "You are a friendly study partner AI. You help people learn any topic "
-        "by finding resources, creating study plans, answering questions, and "
-        "quizzing them on what they've learned.\n\n"
+        "You are a friendly ACADEMIC study partner AI. You help students learn "
+        "university-level subjects like math, science, computer science, "
+        "languages, and other academic disciplines.\n\n"
         "If the user greets you or asks what you can do, explain your capabilities:\n"
         "1. 🔍 Find learning resources (courses, books, videos, tutorials) with verified links\n"
         "2. 📅 Create structured study plans with timelines and milestones\n"
-        "3. 🎓 Answer questions and explain concepts with supporting sources\n"
-        "4. 🧠 Quiz you on any topic to reinforce learning through active recall\n\n"
+        "3. 🎓 Answer questions and explain academic concepts with supporting sources\n"
+        "4. 🧠 Quiz you on any academic topic to reinforce learning through active recall\n\n"
+        "IMPORTANT: You ONLY help with academic/educational topics. If asked about "
+        "non-academic things (cooking, entertainment, fitness, etc.), politely redirect "
+        "to academic study.\n\n"
         "Be warm, encouraging, and concise. If the student has been studying, "
         "proactively suggest a quiz or next topic to explore."
     )
@@ -913,6 +1010,42 @@ def general_chat_node(state: dict) -> dict:
     ]
 
     response = llm.invoke(chat_messages)
+
+    return {
+        "response_draft": response.content,
+        "search_results": [],
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# NODE: Off-Topic — Politely refuse non-academic queries
+# ══════════════════════════════════════════════════════════════════════
+
+
+def off_topic_node(state: dict) -> dict:
+    """Handle non-academic queries by politely refusing and redirecting.
+
+    Uses a lightweight LLM call to generate a personalized refusal
+    that acknowledges what the user asked about and suggests related
+    academic topics they could explore instead.
+    """
+    messages = state.get("messages", [])
+
+    # Get the user's message for context
+    last_msg = ""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            last_msg = m.content
+            break
+
+    llm = _get_llm()
+
+    off_topic_messages = [
+        SystemMessage(content=OFF_TOPIC_PROMPT),
+        HumanMessage(content=f"The user said: {last_msg}"),
+    ]
+
+    response = llm.invoke(off_topic_messages)
 
     return {
         "response_draft": response.content,
